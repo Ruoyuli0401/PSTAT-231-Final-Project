@@ -1,0 +1,484 @@
+---
+title: "231-Final Project-BPM"
+author: "Ruoyu Li"
+date: "2022-11-29"
+output: 
+  html_document:
+    toc: True
+    toc_float: true
+    code_folding: hide
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, results = 'hide',message=FALSE}
+library(ggplot2)
+library(yardstick)
+library(tidymodels)
+library(tidyverse)
+library(ISLR)
+library(ISLR2)
+library(glmnet)
+library(janitor)
+library(corrr)
+library(corrplot)
+library(rpart.plot)
+library(vip)
+library(janitor)
+library(randomForest)
+library(xgboost)
+library(dplyr)
+tidymodels_prefer(quiet = FALSE)
+```
+
+# Introduction
+```{r echo=FALSE, fig.cap = "Figure caption"}
+knitr::include_graphics("~/Desktop/PSTAT 231/Final project/images/NBA-Logo.png")
+```
+
+In the sports industry, "What makes a great player?" is always a tricky and hard question for anyone to answer. It's tricky for the fans when they debate endlessly about "Who is the GOAT (Greatest Of All Time)?". It's hard for the players because they probably can't tell what's their best strength or contribution to the team. It's difficult for coaches and team managers because when they pick players in the draft each year, they have to decide on which players they should have on their teams.  
+
+As for me, I am a basketball fan and a huge fan of NBA (The National Basketball Association), and I personally cannot answer this question well because there are simply so many statistical numbers about those players and you never know which ones are more important than the others. Therefore, in this project, I will use statistical machine learning to investigate data about all drafted NBA players between the year 1989 and 2021. The original dataset contains many information about the NBA career stats of those players, including but not limited to their: overall pick, teams, time played, points, rebounds, assists, field goal percentage etc.
+
+My goal is that I aim to predict the **Box Plus/Minus (BPM)** of a player given his draft pick and other stats. So, this project will mainly address these two questions:
+
+  **1. Can we build a good machine learning model that can predict a certain player's Box Plus/Minus stats? (predictive)**  
+  **2. For a player's Box Plus/Minus stats, is the number of overall pick a crucial indicator of it? Or, which of the player’s statistics contributes the most to his Box Plus/Minus? (inferential) ** 
+
+Before we start, I will first introduce a key terminology here: `Box Plus/Minus`. It is our outcome variable for all the models so it's good for us to understand what it means and why I believe this is a good statistics to measure a player's performance/contribution to the team. 
+
+A detailed explanation of Box Plus/Minus is available on the website of [Basketball Reference](https://www.basketball-reference.com/about/bpm2.html). But here is a summary of what it means:
+
+**Box Plus/Minus** is a **basketball box score-based metric** that estimates a basketball player’s contribution to the team when that player is on the court. BPM uses a player’s box score information, position, and the team’s overall performance to estimate the player’s contribution in **points above league average per 100 possessions played** (100 is about the number of possessions a team will play in a 48-minute NBA game). 
+
+To explain it more clearly, we can take an example of a player A who has a BPM of +5.0. What it means is that we take statistics of all NBA players and suppose there's an **average player** with a BPM of +0.0. Then we compare the player A with BPM +5.0 to the average player and it tells us that **the presence of player A on the court for 100 possessions will contribute 5 more points compared to the average player**. That's also why we suppose that the average player has a BPM of +0.0 because 0 is the defined league average for BPM meaning that having an average player on the court is not leading the team to win more points nor causing the team to lose any points.
+
+And we have the following table to give a sense of the scale of BPM:
+
+  +   +10.0 is an all-time season (think peak Michael Jordan or LeBron James)
+  +   +8.0 is an MVP season (think peak Dirk Nowitzki or peak Shaquille O'Neal)
+  +   +6.0 is an all-NBA season
+  +   +4.0 is in all-star consideration
+  +   +2.0 is a good starter
+  +   +0.0 is a decent starter or solid 6th man
+  +   -2.0 is a bench player (this is also defined as "replacement level")
+  +   Below -2.0 are many end-of-bench players
+
+We should also note that in this table, +0.0 is a decent starter or solid 6th man instead of a "average player" because in reality, the better players play a lot more time and possessions that the bench players. So, we actually **should have a lot more players with negative BPM than positive BPM**. 
+
+After we know what problems we will be working on and what the outcome variable is, we can now do some Exploratory Data Analysis to our raw data file.
+
+# Exploratory Data Analysis
+
+The first thing in my EDA is to read in our raw data, clean the names and look at a summary of it:
+```{r}
+setwd("~/Desktop/PSTAT 231/Final project")
+nba <- read.csv(file = '~/Desktop/PSTAT 231/Final project/data/nbaplayersdraft.csv')
+nba <- clean_names(nba) #use clean_names() to unify the format of all variables
+summary(nba) #give a summary of information for all 
+```
+
+By looking at the summary table of all the variables in the raw data, I noticed the following things and decided to make proper data transformations to the raw data:
+
+1. Besides the variables for basic player information, there are some NA values for all other variables such as `years_active`, `games`, `X3_point_percentage` and so on. I believe that the NA values are reasonable because of the following reasons:
+  + In history, some drafted NBA players actually never played a single game for the NBA, so it's reasonable that besides their personal information, there is no data for any of their stats. This is also probably true because if we look at all NA values except for `field_goal_percentage`, `x3_point_percentage` and `free_throw_percentage`, they are all 253 or 254, implying that this is about the number of players drafted but never played for NBA.
+  + For `field_goal_percentage`, `x3_point_percentage` and `free_throw_percentage`, the NA's are also reasonable because some players might not have a chance to shoot any shots at all. We'll see later in the EDA that some player stats should be excluded because they played too few games for NBA. The only exceptionally high NA value is for `x3_point_percentage`, which is 377. This can be explained because each basketball player has a position, and before 3-point basket became popular in the 21st century, players at some positions such as center usually never take any 3-point shots.
+  + After my analysis, and since out dataset has a total of 1922 observations, I decided to **remove the players** that have corresponding NA values because they're not helpful in my data.
+  
+2. There are too many(24) variables in my dataset and some of them are duplicate or not useful for my model, so I decided to **remove some variables** that I will not work with, such as `id`(it's just the row number),`year`(I don't want to know when is the player drafted), `college`(I do not want to work with the specific college that the player graduated from),`rank`(it's duplicate of overall_pick) and `x3_point_percentage`, `free_throw_percentage`(because some players never shoot a 3-point basket or free throw in their career).
+
+3. R took variables like `overall_pick` as numeric variables, so I will **factor** such variables.
+
+
+```{r}
+nba <- na.omit(nba) # Transformation 1
+nba <- select(nba,-c(id,year,college,rank,x3_point_percentage,free_throw_percentage)) #Transformation 2
+nba$overall_pick <- factor(nba$overall_pick) #Transformation 3
+nrow(nba) #return the number of observations left
+```
+
+After the above transformations, we're left with 1529 observations, which is still a good number, so I will then explore on the outcome variable that I want to work with, `box_plus_minus`. 
+
+I will plot a histogram to see its distribution:
+```{r}
+nba %>%
+  ggplot(aes(box_plus_minus)) +
+  geom_bar() +
+  ggtitle('Distribution of Outcome Variable')
+```
+
+It looks like a bell-shaped normal distribution, but we can see that there are several obvious outliers one around 50 and another around -25. From our understanding of BPM, these values are definitely not normal. My thought is that there might be some players that played too few games or even too short of time in one game, so their statistics is not NA but is also not representative of their overall ability as well. Therefore, I pulled out the stats for those outlier players as below:
+
+```{r}
+nba[which(nba$box_plus_minus == max(nba$box_plus_minus)),]#extract the row with highest BPM
+nba[which(nba$box_plus_minus == min(nba$box_plus_minus)),]#extract the row with lowest BPM
+```
+
+Indeed, I see that they are players who each played only 3 minutes and 21 minutes for NBA, so it's almost meaningless to take their stats numbers into account for my model because the sample size is simply too small!
+
+Therefore, I decided to *filter* the players and only include the players that have played a reasonable amount of time in the NBA to be considered. In the following chunk, I filter out some players and only kept the ones who have played for at least **2 years** and **50 games** in the NBA. Then, I plotted again the distribution of our outcome variable `box_plus_minus`.
+```{r}
+nba <- filter(nba,years_active >= 2 & games >= 50) #filter out the players who played too few for NBA
+nba %>%
+  ggplot(aes(box_plus_minus)) +
+  geom_bar() +
+  ggtitle('Distribution of Outcome Variable after Filtering')
+nrow(nba) #return the number of observations left
+mean(nba$box_plus_minus) #return the mean of BPM after filtering
+```
+
+At this point, I can see that the outliers are all gone, and we're left with 1288 observations. This is still a good amount for me. Moreover, the plot looks a lot more normal and we can see that it's bell-shaped with mean a little lower than 0.0, which is explained in the measurement of BPM. So now, I think I can keep working with this dataset.
+
+Now, I want to see the correlation between some numeric variables that I am interested in, so I created the following correlation matrix to see the relationships among those variables:
+```{r,fig.width=8}
+nba %>% 
+  select(c(overall_pick , years_active, games , minutes_played , average_minutes_played, field_goal_percentage , points_per_game ,
+           average_total_rebounds , average_assists, box_plus_minus)) %>% 
+  select_if(is.numeric) %>% 
+  cor() %>% 
+  corrplot(method = 'number', diag = F, type = 'lower', bg = 'white', title = 'Correlation matrix for some numeric variables')
+```
+
+From this correlation matrix, there are several things I observed:
+
+1. `games`, `years_active`, `minutes_played` are highly correlated with each other. This makes sense since they are all measurements about the total time a player has played for the NBA. So, when I create my recipe, if I include all of them as predictors because I want their information, I will use Principle Component Analysis and probably extract one principle component from them.
+
+2. For our outcome variable `box_plus_minus`, `average_minutes_played` and `points_per_game` have the highest correlations with it. This result is also comprehensible because BPM basically measures how many points can a player contribute for 100 possessions, and if a player can score more points per game, the player should be given more time to play each game and this would lead to a higher BPM. 
+
+3. There ar some other explainable high correlations, such as `points_per_game` and `average_minutes_played`, implying that a player that plays a lot of time each game usually get more points in a game. `points_per_game`/`average_minutes_played` and `average_assists`, implying that a player who sends more dimes also can get more points and playing time etc.
+
+At this point, we have had a good understanding of the outcome variable `box_plus_minus`, and our data is well cleaned up and ready to use, so we are ready to prepare to our models!
+
+# Model Preparation
+This is the section that we prepare our data for fitting different models.
+
+## Initial Split
+We first split our dataset into training and testing sets according to a 80%-20% split. Remember to set seed here so that we can reproduce the same result each time we run the program.
+```{r}
+set.seed(23) #set seed at beginning
+nba_split <- initial_split(nba, prop = 0.80, strata = box_plus_minus) #use stratified sampling
+nba_train <- training(nba_split)
+nba_test <- testing(nba_split)
+```
+
+## Create recipe
+Then we create the recipe for our model. I used 8 predictors in total to predict `box_plus_minus`, they are `team`, `overall_pick`, `years_active`, `games`, `field_goal_percentage`, `points_per_game`, `average_total_rebounds` and `average_assists`.
+
+I am more interested in using a player's efficiency to determine his Box Plus/Minus, so I used for example `points_per_game` instead of `points` as predictor in my recipe. I also dummy coded all nominal predictors and normalized all predictors. Also as mentioned before, I used step_pca() to extract one principle component from predictors `games` and `years_active`, and this one principle component should give me a reflection of the total playing time of players.
+```{r}
+#+ average_minutes_played
+nba_recipe <- 
+  recipe(box_plus_minus ~ team + overall_pick + years_active + games + field_goal_percentage + points_per_game + average_total_rebounds + average_assists, data = nba_train) %>% 
+  step_dummy(all_nominal_predictors()) %>% #dummy code nominal predictors
+  step_normalize(all_predictors()) %>% #normalize all predictors
+  step_pca(years_active,games,num_comp = 1) %>% #principle component analysis
+  step_zv(all_predictors()) #remove variables that contain only a single value.
+```
+
+## Cross-Validation 
+We also need to fold the training set using *v*-fold cross-validation, with `v = 5`. Stratify on the outcome variable.
+```{r}
+nba_folds <- vfold_cv(nba_train, v = 5, strata = box_plus_minus) #use stratified sampling
+```
+
+# Fitting and tuning different models
+
+Here I will try to fit the following models to our 5-fold training data and see which one performs the best in terms of $R^2$ value:
+
+Here is just to remind that $R^2$ is a measure of proportion of the variability in Y(outcome variable) that can be explained using X(predictors). It's a value between 0 and 1 and usually the higher $R^2$ is,the better our model fits the data. Since our problem would be an regression problem, I will use this metric to evaluate the performance of each model.
+
+## Linear Regression
+The first model we use is a simple linear regression model. It works as follows:
+```{r,message=FALSE}
+lm_model <- linear_reg() %>% #setting up the model
+  set_engine("lm")
+
+lm_wkflow <- workflow() %>% #setting up the workflow
+  add_model(lm_model) %>% 
+  add_recipe(nba_recipe)
+
+lm_fit_cv <- fit_resamples(lm_wkflow, resamples = nba_folds) #fit the model in the 5 folds of training data
+
+collect_metrics(lm_fit_cv)#use collect_metrics() to see the R^2 value of our model.
+```
+
+We can see that our simplest linear regression model gives us a mean $R^2$ value of 0.6616494	, this is a not bad $R^2$ value saying that about 66% of the variability of BPM can be explained by our model. However, we are not sure if we would have the problem of overfitting in linear regression, so I will choose to integrate some penalty term in our model and use Elastic Net tuning method to find a regularized regression model for our data. 	
+
+## Elastic Net Tuning
+Here is our regularized regression model:
+```{r,message=FALSE}
+elastic_net <-linear_reg(penalty = tune(), mixture = tune()) %>% #set up the model, tune penalty and mixture
+  set_mode("regression") %>% 
+  set_engine("glmnet")
+
+elastic_net_workflow <- workflow() %>% #setting up the workflow
+  add_recipe(nba_recipe) %>% 
+  add_model(elastic_net)
+#create regular grid for tuning
+elastic_net_grid <- grid_regular(penalty(range = c(-5, 5)), mixture(range = c(0,1)), levels = 10) 
+
+en_tune_res <- tune_grid(
+  elastic_net_workflow,
+  resamples = nba_folds, 
+  grid = elastic_net_grid
+)
+
+autoplot(en_tune_res) #visualize the results of our model
+
+write_rds(en_tune_res, file = '~/Desktop/PSTAT 231/Final project/R_scripts/elastic_net.rds')
+```
+
+From the plot above, we can see that in terms of $R^2$, its value first increase by a little then decrease quickly if we increase the amount of regularization. For the proportion of Lasso Penalty or mixture, the difference is not clear but in terms of RMSE, we can see that the pure lasso regression model tends to have higher RMSE. We can check to see which one is our best-performing elastic tuning model here:
+
+```{r}
+show_best(en_tune_res, metric = "rsq",1) %>% select(-.estimator, -.config)
+```
+Here we have a $R^2$ value of 0.6866934 when penalty is 0.2782559	and mixture is 0.2222222, which is slightly better than the linear regression model that we have. Now, we will turn from linear models to test some tree-based models:	
+
+## Regression Tree
+The first tree-based the model that I will try is a regression tree, it's a decision tree model and it's good that we can see how it makes decisions at each step. I will tune the `cost_complexity` of the decision tree, or the pruning penalty, to find a more optimal complexity. Firstly, I'll fit the model and see what's the best $R^2$ value we can get from the pruned tree..
+```{r, eval=TRUE,message=FALSE}
+tree_spec <- decision_tree() %>% #set up model
+  set_engine("rpart") %>% 
+  set_mode("regression")
+
+reg_tree_wf <- workflow() %>% #set up workflow
+  add_model(tree_spec %>% set_args(cost_complexity = tune())) %>% #we will tune the cost_complexity here
+  add_recipe(nba_recipe)
+
+param_grid <- grid_regular(cost_complexity(range = c(-4, -1)), levels = 10) #regular grid for tuning
+
+reg_tree_tune_res <- tune_grid(
+  reg_tree_wf, 
+  resamples = nba_folds, 
+  grid = param_grid, 
+  metrics = metric_set(rsq)
+)
+
+write_rds(reg_tree_tune_res, file = '~/Desktop/PSTAT 231/Final project/R_scripts/regression_tree.rds')
+
+autoplot(reg_tree_tune_res) #plor the result at different cost_complexity levels
+```
+
+We can see that as the Cost-Complexity increases, the $R^2$ value first increases a bit but then deceases quickly. We cans ee our best performing tuned model here:
+```{r}
+head(arrange(collect_metrics(reg_tree_tune_res), desc(mean)),1) #get the R^2 value for our best model
+```
+
+At Cost-Complexity level 0.002154435, we have reached the highest $R^2$ value of 0.610724, which isn't that good compared to the above linear models, but it's useful that we can used a decision tree model and plot how it makes the decision at each step below:
+```{r,warning=FALSE}
+regression_tree <- read_rds(file = '~/Desktop/PSTAT 231/Final project/R_scripts/regression_tree.rds')
+
+rt_best_model <- select_best(regression_tree)
+
+reg_tree_final <- finalize_workflow(reg_tree_wf, rt_best_model)
+
+reg_tree_final_fit <- fit(reg_tree_final, data = nba_train)
+
+reg_tree_final_fit %>%
+  extract_fit_engine() %>%
+  rpart.plot()
+```
+
+## Random Forest
+Now beyond a single decision tree, I will fit a random forest model for tuning as well. Here I tuned three parameters:`mtry` is an integer for the number of predictors that will be randomly sampled at each split when creating the tree models.`Trees`	is an integer for the number of trees to be fit to the model. `Min_n`	is an integer for the minimum number of data points in a node that are required for the node to be split further. I tuned `mtry` from 1 to 8, the rule of thumb is we take `p/3` variables when building a random forest of regression trees, but since we only have 8 predictors here I just set to the maximum of 8.
+```{r,eval=TRUE,message=FALSE}
+rf_spec <- rand_forest(mtry = tune(), trees = tune(), min_n = tune()) %>%
+  set_engine("ranger", importance = "impurity") %>% #set up model
+  set_mode("regression")
+
+rf_wf <- workflow() %>% #set up workflow
+  add_model(rf_spec) %>%
+  add_recipe(nba_recipe)
+
+rf_grid <- grid_regular(mtry(range = c(1,8)), #create regular grid for tuning 3 parameters
+                           min_n(range = c(5,20)),
+                           trees(range = c(200,1000)), levels = 8)
+
+rf_tune_res <- tune_grid(
+  rf_wf, 
+  resamples = nba_folds, 
+  grid = rf_grid, 
+  metrics = metric_set(rsq)
+)
+
+write_rds(rf_tune_res, file = '~/Desktop/PSTAT 231/Final project/R_scripts/random_forest.rds')
+
+autoplot(rf_tune_res) #visualize the results
+```
+
+From the plots above, we can see that the $R^2$ value typically increases when we increase `mtry`, the number of randomly selected predictors. Also, minimum node size and number of trees don't seem to affect the $R^2$ value a lot.
+
+Now I will see which one is our best tuned random forest model:
+```{r}
+random_forest <- read_rds(file = '~/Desktop/PSTAT 231/Final project/R_scripts/random_forest.rds')
+rf_res <- arrange(collect_metrics(random_forest), desc(mean))
+head(rf_res,1)
+```
+
+Here we can see that for our random forest models, the best one reached a $R^2$ value of 0.678146, with `mtry` = 8, `trees` = 200 and `min_n` = 5. It is in general a not bad $R^2$ value.
+
+## Boosted Trees
+Finally, I will tune a boosted tree model to my data here, I will tune two parameters:`trees`,`tree_depth`, which are the number of trees it can grow and the maximum depth of our model.
+```{r,eval=TRUE,message=FALSE}
+boost_spec <- boost_tree() %>%
+  set_engine("xgboost") %>%
+  set_mode("regression")
+
+boost_wf <- workflow() %>%
+  add_model(boost_spec %>% set_args(trees = tune(),tree_depth =tune())) %>%
+  add_recipe(nba_recipe)
+
+boost_grid <- grid_regular(trees(range = c(20,1000)),
+                           tree_depth(range = c(1,10)), 
+                           levels = 10)
+
+boost_tune_res <- tune_grid(
+  boost_wf,
+  resamples = nba_folds,
+  grid = boost_grid,
+  metrics = metric_set(rsq)
+)      
+
+write_rds(boost_tune_res, file = '~/Desktop/PSTAT 231/Final project/R_scripts/boost_tree.rds')
+
+autoplot(boost_tune_res)
+```
+
+From the plot, we can see that for most tree depths, the $R^2$ value tends to go down as we increase the number of trees, as we know this might be because of overfitting. And it's quite clear from the plot that the best performing model is tree_depth = 2 and we can find it here:
+```{r,warning=FALSE}
+boost_tree <- read_rds(file = '~/Desktop/PSTAT 231/Final project/R_scripts/boost_tree.rds')
+bt_res <- arrange(collect_metrics(boost_tree), desc(mean))
+head(bt_res,1)
+```
+
+We can see that our best boosted tree model have an $R^2$ value of 0.6835549 when `trees` = 128 and `tree_depth` = 2, which is a not bad $R^2$ value as well.
+
+# Final Model Building and Selection
+After I fitted and tuned all the above models, I found the best tuning parameters for each model and I will next fit each of the best models to the entire training dataset and compare their performances.
+
+## Linear Regression Final
+```{r,warning=FALSE}
+#select the best model
+lm_best_model <- select_best(lm_fit_cv, metric = "rsq")
+#create a finalized workflow
+lm_final <- finalize_workflow(lm_wkflow, lm_best_model)
+#fit our best model to the entire training set
+lm_final_fit <- fit(lm_final, data = nba_train)
+#get the R^2 value for our final model fitting on the training set
+augment(lm_final_fit, new_data = nba_train) %>%
+  rsq(truth = box_plus_minus, estimate = .pred)
+```
+
+
+## Elastic Net Final
+```{r,warning=FALSE}
+elstic_net <- read_rds(file = '~/Desktop/PSTAT 231/Final project/R_scripts/elastic_net.rds')
+#select the best model
+en_best_model <- select_best(elstic_net, metric = "rsq")
+#create a finalized workflow
+elastic_net_final <- finalize_workflow(elastic_net_workflow, en_best_model)
+#fit our best model to the entire training set
+elastic_net_final_fit <- fit(elastic_net_final, data = nba_train)
+#get the R^2 value for our final model fitting on the training set
+augment(elastic_net_final_fit, new_data = nba_train) %>%
+  rsq(truth = box_plus_minus, estimate = .pred)
+```
+
+## Regression Tree Final
+```{r,warning=FALSE}
+#select the best model
+rt_best_model <- select_best(reg_tree_tune_res, metric = "rsq")
+#create a finalized workflow
+rt_final <- finalize_workflow(reg_tree_wf, rt_best_model)
+#fit our best model to the entire training set
+rt_final_fit <- fit(rt_final, data = nba_train)
+#get the R^2 value for our final model fitting on the training set
+augment(rt_final_fit, new_data = nba_train) %>%
+  rsq(truth = box_plus_minus, estimate = .pred)
+```
+
+## Random Forest Final
+```{r,warning=FALSE}
+random_forest <- read_rds(file = '~/Desktop/PSTAT 231/Final project/R_scripts/random_forest.rds')
+#select the best model
+best_rf <- select_best(random_forest)
+#create a finalized workflow
+rf_final <- finalize_workflow(rf_wf, best_rf)
+#fit our best model to the entire training set
+rf_final_fit <- fit(rf_final, data = nba_train)
+#get the R^2 value for our final model fitting on the training set
+augment(rf_final_fit, new_data = nba_train) %>%
+  rsq(truth = box_plus_minus, estimate = .pred)
+```
+
+## Boosted Tree Final
+```{r,warning=FALSE}
+#select the best model
+bt_best_model <- select_best(boost_tune_res, metric = "rsq")
+#create a finalized workflow
+bt_final <- finalize_workflow(boost_wf, bt_best_model)
+#fit our best model to the entire training set
+bt_final_fit <- fit(bt_final, data = nba_train)
+#get the R^2 value for our final model fitting on the training set
+augment(bt_final_fit, new_data = nba_train) %>%
+  rsq(truth = box_plus_minus, estimate = .pred)
+```
+
+We can make a table to see which model performs the best here:
+```{r}
+r_squared <- c(0.733101	, 0.7038161	, 0.7396775	, 0.9059735, 0.8447882		)
+models <- c("Linear Regression", "Elastic Net", "Regression Tree", "Random Forest", "Boosted Tree")
+results <- tibble(r_squared = r_squared, models = models)
+results %>% 
+  arrange(-r_squared)
+```
+
+We see that the best model we have is our final random forest model. It reached a $R^2$ value of 0.9059735, which is pretty high and means 90.6% of the variability of BPM can be explained by our model! Now we will use this model to fit on the testing data and see how it performs:
+
+# Final Fitting To Testing Set
+Finally, after we select our best-performing random forest model on the entire training set, I will fit it on the testing test and see how well it performs:
+```{r,warning=FALSE}
+rf_final_fit_test <- fit(rf_final, data = nba_test)
+augment(rf_final_fit_test, new_data = nba_test) %>%
+  rsq(truth = box_plus_minus, estimate = .pred)
+```
+
+After we fit it to the testing set, surprisingly, the $R^2$ value actually went up to 0.9251155! This could happen because our data split is random.	This value means 92.5% of the variability of BPM in the testing set can be explained by our model, which is very high and out model is effective in this sense!
+
+Here we can also visualize the results of our model by plotting the true values against the predicted values:
+```{r}
+augment(rf_final_fit_test, new_data = nba_test) %>%
+  ggplot(aes(box_plus_minus, .pred)) +
+  geom_abline() +
+  geom_point(alpha = 0.5)
+```
+
+We can see that most points are either on the line or pretty close to it, so our model is good!
+
+# Conclusion
+In the introduction, I mentioned that this project will mainly focuses on two questions:
+
+  1. Can we build a good machine learning model that can predict a certain player's Box Plus/Minus stats? (predictive)  
+  2. For a player's Box Plus/Minus stats, is the number of overall pick a crucial indicator of it? Or, which of the player’s statistics contributes the most to his Box Plus/Minus? (inferential)  
+  
+Now we can conclude that yes! Our result **for the first question** is positive, given the basic statistics of the players, I showed that we can build a random forest model with `mtry` = 8, `trees` = 200 and `min_n` = 5. And this model gives us pretty good results that we have a $R^2$ value of over 0.9 for the testing set, which means that our model has a lot of predictive power and can explain over 90% of the variability of Box Plus/Minus.
+
+To address the second question of this project, I will first plot a **variable importance plot** using our random forest model:
+```{r}
+rf_final_fit %>% #final fit using training dataset
+  extract_fit_engine() %>% #I used training here because the model is fitted on the training data
+  vip()
+```
+
+We can observe from this graph that for our prediction of `Box Plus/Minus`, the most important variables are `points_per_game`, `PC1`, `average_assists`, `average_total_rebounds` and `field_goal_percentage`. The other predictors are of relatively much lower importance and it's obvious that `overall_pick` doesn't play a huge role in this model! 
+
+Therefore, **for the second question**, we reached the conclusion that the number of `overall_pick` is **not** a crucial indicator of prediction of **Box Plus/Minus**. The crucial indicators are `points_per_game`, `PC1`(basically says the total career playing time of player), `average_assists`, `average_total_rebounds` and `field_goal_percentage`. So, it says that even if you are #1 over all pick, don't sleep on that because that doesn't mean you can become a great player! And if you are drafted behind others, don't give up and you can still have a great career! And it says that if you want a higher Box Plus/Minus, you need to get more points each game, have a longer career, and then put on all the assists, rebounds and field goal percentage statistics as well!
+
+Finally, let's go LeBron James! The NBA GOAT in my opinion!
+```{r echo=FALSE, fig.cap = "Figure caption"}
+knitr::include_graphics("~/Desktop/PSTAT 231/Final project/images/LBJ.jpg")
+```
+
